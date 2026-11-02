@@ -10,10 +10,6 @@ import {
 } from "../../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../../config/types.js";
 import type { ContextEngine } from "../../../context-engine/types.js";
-import type {
-  PluginHookAgentContext,
-  PluginHookBeforeAgentRunEvent,
-} from "../../../plugins/hook-types.js";
 import { createHookRunnerWithRegistry } from "../../../plugins/hooks.test-fixtures.js";
 import { createUserTurnTranscriptRecorder } from "../../../sessions/user-turn-transcript.js";
 import { projectAgentRunAttemptTerminal } from "../../agent-run-terminal-outcome.js";
@@ -902,22 +898,22 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
   it.each([true, false])(
     "reports the prepared sandbox to the final run gate: %s",
     async (sandboxed) => {
-      hoisted.resolveSandboxContextMock.mockImplementation(
-        async (options: { workspaceDir: string }) =>
-          sandboxed
-            ? createSandboxTestContext({
-                overrides: {
-                  workspaceDir: options.workspaceDir,
-                  agentWorkspaceDir: options.workspaceDir,
-                },
-              })
-            : null,
-      );
-      const gate = vi.fn(
-        async (_event: PluginHookBeforeAgentRunEvent, ctx: PluginHookAgentContext) =>
-          ctx.sandboxed === true
-            ? { outcome: "pass" as const }
-            : { outcome: "block" as const, reason: "An actual sandbox is required." },
+      hoisted.resolveSandboxContextMock.mockImplementation(async (options: unknown) => {
+        if (!sandboxed) {
+          return null;
+        }
+        const workspaceDir = requireRecord(options, "sandbox options").workspaceDir;
+        if (typeof workspaceDir !== "string") {
+          throw new Error("Expected sandbox workspaceDir");
+        }
+        return createSandboxTestContext({
+          overrides: { workspaceDir, agentWorkspaceDir: workspaceDir },
+        });
+      });
+      const gate = vi.fn(async (_event: unknown, ctx: unknown) =>
+        requireRecord(ctx, "agent run context").sandboxed === true
+          ? { outcome: "pass" as const }
+          : { outcome: "block" as const, reason: "An actual sandbox is required." },
       );
       useHooks([{ hookName: "before_agent_run", pluginId: "sandbox-policy", handler: gate }]);
       const { sessionPrompt } = capturePrompt();
@@ -929,7 +925,7 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
         attemptOverrides: { sandbox: sandboxed ? undefined : createSandboxTestContext() },
       });
       expect(gate).toHaveBeenCalledTimes(1);
-      expect(gate.mock.calls[0]?.[1].sandboxed).toBe(sandboxed);
+      expect(requireRecord(gate.mock.calls[0]?.[1], "agent run context").sandboxed).toBe(sandboxed);
       expect(prompt).toHaveBeenCalledTimes(sandboxed ? 1 : 0);
     },
   );
