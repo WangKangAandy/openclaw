@@ -10,9 +10,14 @@ import {
 } from "../../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../../config/types.js";
 import type { ContextEngine } from "../../../context-engine/types.js";
+import type {
+  PluginHookAgentContext,
+  PluginHookBeforeAgentRunEvent,
+} from "../../../plugins/hook-types.js";
 import { createHookRunnerWithRegistry } from "../../../plugins/hooks.test-fixtures.js";
 import { createUserTurnTranscriptRecorder } from "../../../sessions/user-turn-transcript.js";
 import { projectAgentRunAttemptTerminal } from "../../agent-run-terminal-outcome.js";
+import { createSandboxTestContext } from "../../sandbox/test-fixtures.js";
 import { sumToolResultTextChars } from "../tool-result-context-guard.test-support.js";
 import {
   completedStream,
@@ -893,6 +898,41 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
       "hook:before_agent_run",
     );
   });
+
+  it.each([true, false])(
+    "reports the prepared sandbox to the final run gate: %s",
+    async (sandboxed) => {
+      hoisted.resolveSandboxContextMock.mockImplementation(
+        async (options: { workspaceDir: string }) =>
+          sandboxed
+            ? createSandboxTestContext({
+                overrides: {
+                  workspaceDir: options.workspaceDir,
+                  agentWorkspaceDir: options.workspaceDir,
+                },
+              })
+            : null,
+      );
+      const gate = vi.fn(
+        async (_event: PluginHookBeforeAgentRunEvent, ctx: PluginHookAgentContext) =>
+          ctx.sandboxed === true
+            ? { outcome: "pass" as const }
+            : { outcome: "block" as const, reason: "An actual sandbox is required." },
+      );
+      useHooks([{ hookName: "before_agent_run", pluginId: "sandbox-policy", handler: gate }]);
+      const { sessionPrompt } = capturePrompt();
+      const prompt = vi.fn(sessionPrompt);
+      // No caller-provided sandbox on the positive path; stale caller facts must
+      // not turn an unsandboxed preparation into a trusted sandbox on the negative path.
+      await runAttempt({
+        sessionPrompt: prompt,
+        attemptOverrides: { sandbox: sandboxed ? undefined : createSandboxTestContext() },
+      });
+      expect(gate).toHaveBeenCalledTimes(1);
+      expect(gate.mock.calls[0]?.[1].sandboxed).toBe(sandboxed);
+      expect(prompt).toHaveBeenCalledTimes(sandboxed ? 1 : 0);
+    },
+  );
 
   it("preserves pipeline history when owning context engine assembly mutates then returns malformed context", async () => {
     let sawPrompt = false;
